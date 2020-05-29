@@ -15,52 +15,70 @@ uniform sampler2D CloudsDepthSampler;
 
 varying vec2 texCoord;
 
-struct Layer {
-    vec4 color;
-    float depth;
-};
-
 #define NUM_LAYERS 6
-
-Layer layers[NUM_LAYERS];
-
-vec3 blend(vec3 destination, vec4 source) {
-    return (destination * (1.0 - source.a)) + source.rgb;
+#define try_add_sample(color_sampler, depth_sampler) { \
+    vec4 color = texture2D(color_sampler, texCoord); \
+    if (color.a > 0.0) { \
+        color_samples[sample_count] = color; \
+        depth_samples[sample_count] = texture2D(depth_sampler, texCoord).r; \
+        sample_count++; \
+    } \
 }
 
-void init_arrays() {
-    layers[0] = Layer(vec4(texture2D(DiffuseSampler, texCoord).rgb, 1.0), texture2D(DiffuseDepthSampler, texCoord).r);
-    layers[1] = Layer(texture2D(TranslucentSampler, texCoord), texture2D(TranslucentDepthSampler, texCoord).r);
-    layers[2] = Layer(texture2D(ItemEntitySampler, texCoord), texture2D(ItemEntityDepthSampler, texCoord).r);
-    layers[3] = Layer(texture2D(ParticlesSampler, texCoord), texture2D(ParticlesDepthSampler, texCoord).r);
-    layers[4] = Layer(texture2D(WeatherSampler, texCoord), texture2D(WeatherDepthSampler, texCoord).r);
-    layers[5] = Layer(texture2D(CloudsSampler, texCoord), texture2D(CloudsDepthSampler, texCoord).r);
+// Avoid an array of structs to keep data aligned in memory, helps some on older hardware
+// The color samples can then be linearly scanned after sorting is done, making optimal use of the cache lines
+vec4 color_samples[NUM_LAYERS];
+float depth_samples[NUM_LAYERS];
 
-
-    int j;
-    
-    for (int i = 0; i < NUM_LAYERS; i++) {
-        j = i;
-        
-        while (j > 0 && layers[j].depth > layers[j - 1].depth) {
-            Layer temp = layers[j];
-            layers[j] = layers[j - 1];
-            layers[j - 1] = temp;
-            j--;
-        }
-    }
+vec4 blend(vec4 tex, vec4 sample) {
+    float factor = 1.0 - sample.a;
+    return (tex * factor) + sample;
 }
 
 void main() {
-    init_arrays();
+    // There will always be at least one sample (from the diffuse layer)
+    int sample_count = 1;
+    
+    // Always sample the diffuse layer to provide a base color for blending
+    color_samples[0] = texture2D(DiffuseSampler, texCoord);
+    color_samples[0].w = 1.0; // Discard the alpha channel to fix issues with cutout textures
+    depth_samples[0] = texture2D(DiffuseDepthSampler, texCoord).r;
+    
+    // Try to add a sample from each layer
+    // If the sample's color component is empty, do not add it to the list of samples
+    try_add_sample(TranslucentSampler, TranslucentDepthSampler);
+    try_add_sample(ItemEntitySampler, ItemEntityDepthSampler);
+    try_add_sample(ParticlesSampler, ParticlesDepthSampler);
+    try_add_sample(WeatherSampler, WeatherDepthSampler);
+    try_add_sample(CloudsSampler, CloudsDepthSampler);
 
-    vec3 OutTexel = vec3(0.0);
-
-    for (int ii = 0; ii < NUM_LAYERS; ++ii) {
-        OutTexel = blend(OutTexel, layers[ii].color);
+    // Perform an insertion sort over the samples in the array, sorted by descending depth
+    for (int i = 1; i < sample_count; i++) {
+        int j = i;
+        
+        while (depth_samples[j] > depth_samples[j - 1]) {
+            vec4 color = color_samples[j];
+            color_samples[i] = color_samples[i - 1];
+            color_samples[i - 1] = color;
+            
+            float depth = depth_samples[j];
+            depth_samples[i] = depth_samples[i - 1];
+            depth_samples[i - 1] = depth;
+            
+            // Postpone the bounds check as it will never be true on the first iteration
+            if (--j <= 0) {
+                break;
+            }
+        }
     }
-
-    gl_FragColor = vec4(OutTexel.rgb, 1.0);
+    
+    // Blend and merge the framebuffer samples
+    vec4 tex = vec4(0.0);
+    
+    for (int i = 0; i < sample_count; i++) {
+        tex = blend(tex, color_samples[i]);
+    }
+    
+    // Write the blended colors to the final framebuffer output
+    gl_FragColor = vec4(tex.rgb, 1.0);
 }
-
-
