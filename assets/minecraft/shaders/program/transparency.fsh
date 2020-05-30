@@ -16,12 +16,27 @@ uniform sampler2D CloudsDepthSampler;
 varying vec2 texCoord;
 
 #define NUM_LAYERS 6
-#define try_add_sample(color_sampler, depth_sampler) { \
+
+#define try_insert_sample(color_sampler, depth_sampler) { \
     vec4 color = texture2D(color_sampler, texCoord); \
     if (color.a > 0.0) { \
-        color_samples[sample_count] = color; \
-        depth_samples[sample_count] = texture2D(depth_sampler, texCoord).r; \
-        sample_count++; \
+        int i = sample_count++; \
+        color_samples[i] = color; \
+        depth_samples[i] = texture2D(depth_sampler, texCoord).r; \
+        \
+        /* Perform an insertion sort at the given index in the array, sorted by descending depth */ \
+        while (depth_samples[i] > depth_samples[i - 1]) { \
+            vec4 color = color_samples[i]; \
+            color_samples[i] = color_samples[i - 1]; \
+            color_samples[i - 1] = color; \
+            \
+            float depth = depth_samples[i]; \
+            depth_samples[i] = depth_samples[i - 1]; \
+            depth_samples[i - 1] = depth; \
+            \
+            /* Postpone the bounds check as it will never be true on the first iteration */ \
+            if (--i <= 0) break; \
+        } \
     } \
 }
 
@@ -44,33 +59,14 @@ void main() {
     color_samples[0].w = 1.0; // Discard the alpha channel to fix issues with cutout textures
     depth_samples[0] = texture2D(DiffuseDepthSampler, texCoord).r;
     
-    // Try to add a sample from each layer
-    // If the sample's color component is empty, do not add it to the list of samples
-    try_add_sample(TranslucentSampler, TranslucentDepthSampler);
-    try_add_sample(ItemEntitySampler, ItemEntityDepthSampler);
-    try_add_sample(ParticlesSampler, ParticlesDepthSampler);
-    try_add_sample(WeatherSampler, WeatherDepthSampler);
-    try_add_sample(CloudsSampler, CloudsDepthSampler);
-
-    // Perform an insertion sort over the samples in the array, sorted by descending depth
-    for (int i = 1; i < sample_count; i++) {
-        int j = i;
-        
-        while (depth_samples[j] > depth_samples[j - 1]) {
-            vec4 color = color_samples[j];
-            color_samples[i] = color_samples[i - 1];
-            color_samples[i - 1] = color;
-            
-            float depth = depth_samples[j];
-            depth_samples[i] = depth_samples[i - 1];
-            depth_samples[i - 1] = depth;
-            
-            // Postpone the bounds check as it will never be true on the first iteration
-            if (--j <= 0) {
-                break;
-            }
-        }
-    }
+    // Try to insert a sample from each layer
+    // If the sample's color component is empty, do not insert it to the list of samples
+    // Samples are sorted as they are inserted into the array
+    try_insert_sample(TranslucentSampler, TranslucentDepthSampler);
+    try_insert_sample(ItemEntitySampler, ItemEntityDepthSampler);
+    try_insert_sample(ParticlesSampler, ParticlesDepthSampler);
+    try_insert_sample(WeatherSampler, WeatherDepthSampler);
+    try_insert_sample(CloudsSampler, CloudsDepthSampler);
     
     // Blend and merge the framebuffer samples
     vec4 tex = vec4(0.0);
