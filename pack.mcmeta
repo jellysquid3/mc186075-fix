@@ -2,6 +2,6 @@
 {
    "pack": {
       "pack_format": 5,
-      "description": "Shader optimizations for MC-186075 (mc20w22a, v1.1.1)"
+      "description": "Shader optimizations for MC-186075 (mc20w22a, v1.1.2)"
    }
 }
